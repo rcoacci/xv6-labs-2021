@@ -1,0 +1,2 @@
+1)Any system calls that return static information to the user
+2)Page 0 contains the first level of the tree

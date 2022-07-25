@@ -77,11 +77,32 @@ sys_sleep(void)
 
 
 #ifdef LAB_PGTBL
+extern pte_t *
+walk(pagetable_t pagetable, uint64 va, int alloc);
+
 int
 sys_pgaccess(void)
 {
-  // lab pgtbl: your code here.
-  return 0;
+  uint64 base;
+  int len;
+  uint64 mask_addr;
+  if(argaddr(0, &base) < 0)
+    return -1;
+  if(argint(1, &len) < 0)
+    return -1;
+  if(argaddr(2, &mask_addr) < 0)
+    return -1;
+  uint32 mask = 0;
+  struct proc* p = myproc();
+  for (int i=0; i<len; i++){
+    pte_t* pte = walk(p->pagetable, base+(i*PGSIZE), 0);
+    if(pte!=0 && (*pte & PTE_V) && (*pte & PTE_A)) {
+        mask |= (1 << i); // Set the corresponding bit for the user
+        *pte &= ~PTE_A;   // Clear PTE_A, so new accesses are accounted for
+    }
+  }
+
+  return copyout(p->pagetable, mask_addr, (char*)&mask, sizeof(mask));
 }
 #endif
 
