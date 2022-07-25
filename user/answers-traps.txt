@@ -1,0 +1,6 @@
+1) function arguments go in a0-a7. 13 is in a2 (3rd argument).
+2) Those calls are inlined. In the call to printf, the compiler "called" f in compile time and inlined the result directly.
+3) 0x0628
+4) 0x0038
+5) HE110 World. Yes.
+6) It will print garbage, because it's missing the second argument, so whatever is in a1 will be printed.
