@@ -27,7 +27,6 @@ struct spinlock e1000_lock;
 void
 e1000_init(uint32 *xregs)
 {
-  int i;
 
   initlock(&e1000_lock, "e1000");
 
@@ -41,7 +40,7 @@ e1000_init(uint32 *xregs)
 
   // [E1000 14.5] Transmit initialization
   memset(tx_ring, 0, sizeof(tx_ring));
-  for (i = 0; i < TX_RING_SIZE; i++) {
+  for (int i = 0; i < TX_RING_SIZE; i++) {
     tx_ring[i].status = E1000_TXD_STAT_DD;
     tx_mbufs[i] = 0;
   }
@@ -53,7 +52,7 @@ e1000_init(uint32 *xregs)
   
   // [E1000 14.4] Receive initialization
   memset(rx_ring, 0, sizeof(rx_ring));
-  for (i = 0; i < RX_RING_SIZE; i++) {
+  for (int i = 0; i < RX_RING_SIZE; i++) {
     rx_mbufs[i] = mbufalloc(0);
     if (!rx_mbufs[i])
       panic("e1000");
@@ -95,26 +94,38 @@ e1000_init(uint32 *xregs)
 int
 e1000_transmit(struct mbuf *m)
 {
-  //
-  // Your code here.
-  //
-  // the mbuf contains an ethernet frame; program it into
-  // the TX descriptor ring so that the e1000 sends it. Stash
-  // a pointer so that it can be freed after sending.
-  //
-  
+  acquire(&e1000_lock);
+  if ((tx_ring[regs[E1000_TDT]].status & E1000_TXD_STAT_DD) == 0){
+    release(&e1000_lock);
+    return -1;
+  }
+  uint32 idx = regs[E1000_TDT];
+  if (tx_mbufs[idx]!=0) mbuffree(tx_mbufs[idx]);
+  tx_mbufs[idx] = m;
+  memset(&tx_ring[idx], 0, sizeof(struct tx_desc));
+  tx_ring[idx].addr = (uint64)m->head;
+  tx_ring[idx].length = m->len;
+  tx_ring[idx].cmd = E1000_TXD_CMD_EOP | E1000_TXD_CMD_RS; // Set RS bits: we need DD to be set.
+  regs[E1000_TDT] = (idx+1) % TX_RING_SIZE;
+  release(&e1000_lock);
   return 0;
 }
 
 static void
 e1000_recv(void)
 {
-  //
-  // Your code here.
-  //
-  // Check for packets that have arrived from the e1000
-  // Create and deliver an mbuf for each packet (using net_rx()).
-  //
+  uint32 idx = (regs[E1000_RDT]+1) % RX_RING_SIZE;
+  while(rx_ring[idx].status & E1000_RXD_STAT_DD){
+    rx_mbufs[idx]->len = rx_ring[idx].length; // update mbuf len
+    net_rx(rx_mbufs[idx]); //deliver packet upstream.
+    rx_mbufs[idx] = mbufalloc(0); //allocate new mbuf
+    if (!rx_mbufs[idx])
+      panic("e1000: no memory");
+    memset(&rx_ring[idx], 0, sizeof(struct rx_desc)); // reset current ring entry
+    rx_ring[idx].addr = (uint64)rx_mbufs[idx]->head; // configure new mbuf
+    regs[E1000_RDT] = idx; // set new tail
+    idx = (regs[E1000_RDT]+1) % RX_RING_SIZE;
+  }
 }
 
 void
