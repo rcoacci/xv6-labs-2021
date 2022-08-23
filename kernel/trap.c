@@ -16,6 +16,9 @@ void kernelvec();
 
 extern int devintr();
 
+uint64 handle_mmap(uint64 addr, uint64 scause);
+
+
 void
 trapinit(void)
 {
@@ -49,8 +52,8 @@ usertrap(void)
   
   // save user program counter.
   p->trapframe->epc = r_sepc();
-  
-  if(r_scause() == 8){
+  uint64 scause = r_scause();
+  if(scause == 8){
     // system call
 
     if(p->killed)
@@ -65,6 +68,16 @@ usertrap(void)
     intr_on();
 
     syscall();
+#ifdef LAB_MMAP
+  } else if(scause == 13 || scause == 15){
+    uint64 addr = r_stval(); // get fault addr
+    if(addr < PGROUNDDOWN(p->trapframe->sp) && addr >= p->sz){
+        p->killed = 1;
+    } else {
+      if(handle_mmap(addr, scause) != 0)
+        p->killed = 1;
+    }
+#endif
   } else if((which_dev = devintr()) != 0){
     // ok
   } else {

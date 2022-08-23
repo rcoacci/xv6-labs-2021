@@ -3,8 +3,12 @@
 #include "memlayout.h"
 #include "riscv.h"
 #include "spinlock.h"
+#include "sleeplock.h"
 #include "proc.h"
 #include "defs.h"
+#include "fcntl.h"
+#include "fs.h"
+#include "file.h"
 
 struct cpu cpus[NCPU];
 
@@ -17,6 +21,7 @@ struct spinlock pid_lock;
 
 extern void forkret(void);
 static void freeproc(struct proc *p);
+
 
 extern char trampoline[]; // trampoline.S
 
@@ -140,7 +145,7 @@ found:
   memset(&p->context, 0, sizeof(p->context));
   p->context.ra = (uint64)forkret;
   p->context.sp = p->kstack + PGSIZE;
-
+  memset(&p->vma, 0, sizeof(p->vma));
   return p;
 }
 
@@ -301,6 +306,13 @@ fork(void)
       np->ofile[i] = filedup(p->ofile[i]);
   np->cwd = idup(p->cwd);
 
+  for(int i=0; i<NVMA; i++){
+    if(p->vma[i].len>0){
+      np->vma[i] = p->vma[i];
+      filedup(np->vma[i].f);
+    }
+  }
+
   safestrcpy(np->name, p->name, sizeof(p->name));
 
   pid = np->pid;
@@ -350,6 +362,12 @@ exit(int status)
       struct file *f = p->ofile[fd];
       fileclose(f);
       p->ofile[fd] = 0;
+    }
+  }
+
+  for (int i=0; i<NVMA; i++){
+    if(p->vma[i].len>0){
+      handle_munmap(p->vma[i].start, p->vma[i].len);
     }
   }
 
@@ -653,4 +671,68 @@ procdump(void)
     printf("%d %s %s", p->pid, state, p->name);
     printf("\n");
   }
+}
+uint64
+handle_munmap(uint64 addr, int len){
+  struct proc *p = myproc();
+  struct vma *v = 0;
+  for(int idx=0; idx < NVMA; idx++){ // Find the vma
+    v = &p->vma[idx];
+    if((v->len>0) && (v->start == addr || v->start+v->len == addr+len)){ //unmapping from start or end
+      break;
+    }
+    v=0;
+  }
+  if(v==0) return -1;
+
+  if(v->start == addr){ //unmapping from beggining, change start
+    v->start += len;
+  } // else only need to change the size.
+  v->len -= len; // Either way change the size.
+  if(walkaddr(p->pagetable, addr)!=0){ // Page was actually mapped
+    if(v->flags == MAP_SHARED && (v->prot & PROT_WRITE)){
+      filewrite(v->f, addr, len);
+    }
+    uvmunmap(p->pagetable, PGROUNDDOWN(addr), len/PGSIZE, 1);
+  }
+  if(v->len <= 0){
+    fileclose(v->f);
+    *v = (struct vma){0};
+  }
+  return 0;
+
+}
+
+uint64
+handle_mmap(uint64 addr, uint64 scause){
+  addr = PGROUNDDOWN(addr);
+  struct proc *p = myproc();
+  struct vma *v = 0;
+  for(int idx=0; idx < NVMA; idx++){ // Find the vma
+    v = &p->vma[idx];
+    if(v->start <= addr && addr < v->start+v->len){
+      break;
+    }
+    v=0;
+  }
+  if(v==0) return -1;
+  if(scause == 13 && !v->f->readable) return -1;
+  if(scause == 15 && !v->f->writable) return -1;
+
+  void *pa = kalloc();
+  if(!pa) return -1;
+  memset(pa, 0, PGSIZE);
+  int pte_flags = PTE_U | (v->prot<<1);
+  if(mappages(p->pagetable, addr, PGSIZE, (uint64)pa, pte_flags)!=0){
+    kfree(pa);
+    return -1;
+  }
+  ilock(v->f->ip);
+  if(readi(v->f->ip, 1, addr, v->off+addr-v->start, PGSIZE) <= 0 ){
+    iunlock(v->f->ip);
+    kfree(pa);
+    return -1;
+  }
+  iunlock(v->f->ip);
+  return 0;
 }
